@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sobaka Run</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #ebebeb;
+            font-family: Arial, sans-serif;
+            overflow: hidden;
+        }
+        #gameContainer {
+            position: relative;
+            width: 100%;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+        }
+        #gameCanvas {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            background-color: rgb(235, 235, 235);
+        }
+        .controls {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 100%;
+            z-index: 100;
+            display: flex;
+            pointer-events: none; /* Allow clicks to pass through the container */
+        }
+        .control-btn {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            background-color: rgba(255, 255, 255, 0.7);
+            border: 2px solid #333;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 24px;
+            user-select: none;
+            touch-action: none;
+            pointer-events: auto; /* Re-enable pointer events for the button */
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+        }
+        .jump-area {
+            flex-grow: 1;
+            margin-left: 120px; /* Space for duck button */
+            pointer-events: auto; /* Re-enable pointer events */
+        }
+        @media (min-width: 768px) {
+            .controls {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <canvas id="gameCanvas"></canvas>
+    </div>
+    <div class="controls">
+        <div class="control-btn" id="duckBtn">↓</div>
+        <div class="jump-area" id="jumpBtn"></div>
+    </div>
+
+<script>
+class Game {
+    constructor() {
+        this.canvas = document.getElementById('gameCanvas');
+        this.ctx = this.canvas.getContext('2d');
+        this.lastTime = 0;
+        this.accumulator = 0;
+        this.deltaTime = 1000/60;
+        
+        this.setCanvasSize();
+        window.addEventListener('resize', () => this.setCanvasSize());
+        
+        // Game state
+        this.gameSpeed = 4;
+        this.gravity = 0.6;
+        this.score = 0;
+        this.highScore = 0;
+        this.gameOver = false;
+        this.isIntro = true;
+        this.canRestart = false; // Added flag for restart control
+        
+        // Assets
+        this.assets = {
+            sprites: {},
+            sounds: {}
+        };
+        
+        // Input handling
+        this.setupControls();
+        
+        // Initialize game objects
+        this.sobaka = null;
+        this.obstacles = [];
+        this.clouds = [];
+        this.ground = null;
+        
+        // Start the game loop once assets are loaded
+        this.loadAssets().then(() => {
+            this.init();
+            this.gameLoop();
+        });
+    }
+    
+    setCanvasSize() {
+        const container = document.getElementById('gameContainer');
+        const containerWidth = container.clientWidth;
+        const containerHeight = container.clientHeight;
+        
+        // Set canvas size maintaining aspect ratio
+        const aspectRatio = 16/9;
+        let width = containerWidth;
+        let height = containerWidth / aspectRatio;
+        
+        if (height > containerHeight) {
+            height = containerHeight;
+            width = height * aspectRatio;
+        }
+        
+        this.canvas.width = width;
+        this.canvas.height = height;
+        
+        // Center the canvas
+        this.canvas.style.position = 'absolute';
+        this.canvas.style.left = '50%';
+        this.canvas.style.top = '50%';
+        this.canvas.style.transform = 'translate(-50%, -50%)';
+        
+        // Update scale factors for game objects
+        this.scale = {
+            x: width / 1920,
+            y: height / 1080
+        };
+    }
+    
+    async loadAssets() {
+        const spritesToLoad = [
+            'sobaka.png',
+            'sobaka_ducking.png',
+            'ground.png',
+            'cloud.png',
+            'cati-small.png',
+            'Parra.png',
+            'home_screen.png',
+            'logo2.png',
+            'replay_button.png',
+            'game_over.png',
+            'numbers.png'
+        ];
+        
+        const soundsToLoad = [
+            'jump66.wav',
+            'jump66_long.wav',
+            'Blip_47.wav',
+            'Explosion9.wav',
+            'checkPoint.wav',
+            'hit_hurt107.wav'
+        ];
+        
+        // Load sprites
+        for (const sprite of spritesToLoad) {
+            const img = new Image();
+            img.src = `sprites/${sprite}`;
+            await new Promise(resolve => {
+                img.onload = resolve;
+            });
+            this.assets.sprites[sprite] = img;
+        }
+        
+        // Load sounds
+        for (const sound of soundsToLoad) {
+            const audio = new Audio();
+            audio.src = `sounds/${sound}`;
+            this.assets.sounds[sound] = audio;
+        }
+    }
+    
+    setupControls() {
+        // Keyboard controls
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' || e.code === 'ArrowUp') {
+                this.handleJump();
+            } else if (e.code === 'ArrowDown') {
+                this.handleDuck(true);
+            }
+        });
+        
+        document.addEventListener('keyup', (e) => {
+            if (e.code === 'ArrowDown') {
+                this.handleDuck(false);
+            }
+        });
+        
+        // Touch controls
+        const jumpBtn = document.getElementById('jumpBtn');
+        const duckBtn = document.getElementById('duckBtn');
+        
+        jumpBtn.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            this.handleJump();
+        });
+        
+        duckBtn.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            this.handleDuck(true);
+        });
+        
+        duckBtn.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            this.handleDuck(false);
+        });
+    }
+    
+    handleJump() {
+        if (this.isIntro) {
+            this.isIntro = false;
+            return;
+        }
+
+        if (this.gameOver && this.canRestart) {
+            this.init();
+            this.gameOver = false;
+            return;
+        }
+        
+        if (this.sobaka && !this.gameOver) {
+            // Allow jumping if on ground or ducking (like in original)
+            if (this.sobaka.isOnGround() || this.sobaka.isDucking) {
+                this.sobaka.jump();
+                this.playSound(this.sobaka.isDucking ? 'jump66_long.wav' : 'jump66.wav');
+            }
+        }
+    }
+    
+    handleDuck(isDucking) {
+        if (this.sobaka && !this.gameOver) {
+            if (this.sobaka.isDucking !== isDucking) { // Only play sound on state change
+                this.sobaka.isDucking = isDucking;
+                if (isDucking) {
+                    this.playSound('Blip_47.wav');
+                }
+            }
+        }
+    }
+    
+    playSound(soundName) {
+        const sound = this.assets.sounds[soundName];
+        if (sound) {
+            sound.currentTime = 0;
+            sound.play().catch(() => {});
+        }
+    }
+    
+    init() {
+        this.sobaka = new Sobaka(this);
+        this.ground = new Ground(this);
+        this.obstacles = [];
+        this.clouds = [];
+        this.score = 0;
+        this.gameSpeed = 4;
+        this.gameOver = false;
+    }
+    
+    gameLoop(currentTime = 0) {
+        const deltaTime = currentTime - this.lastTime;
+        this.lastTime = currentTime;
+        
+        this.accumulator += deltaTime;
+        
+        while (this.accumulator >= this.deltaTime) {
+            this.update();
+            this.accumulator -= this.deltaTime;
+        }
+        
+        this.render();
+        requestAnimationFrame((time) => this.gameLoop(time));
+    }
+    
+    update() {
+        if (this.isIntro || this.gameOver) return;
+        
+        this.sobaka.update();
+        this.ground.update();
+        
+        // Update obstacles
+        this.obstacles = this.obstacles.filter(obstacle => {
+            obstacle.update();
+            return obstacle.isVisible();
+        });
+        
+        // Generate new obstacles
+        if (Math.random() < 0.02 && this.obstacles.length < 3) {
+            if (Math.random() < 0.5) {
+                this.obstacles.push(new Cactus(this));
+            } else {
+                this.obstacles.push(new Parra(this));
+            }
+        }
+        
+        // Check collisions
+        for (const obstacle of this.obstacles) {
+            if (this.checkCollision(this.sobaka, obstacle)) {
+                this.gameOver = true;
+                this.playSound('Explosion9.wav');
+                if (this.score > this.highScore) {
+                    this.highScore = this.score;
+                }
+                break;
+            }
+        }
+        
+        // Update score
+        if (!this.gameOver) {
+            this.score++;
+            if (this.score % 1000 === 0) {
+                this.playSound('checkPoint.wav');
+                this.gameSpeed += 0.1;
+            }
+        }
+    }
+    
+    checkCollision(sobaka, obstacle) {
+        const sobakaBox = sobaka.getCollisionBox();
+        const obstacleBox = obstacle.getCollisionBox();
+        
+        return !(sobakaBox.right < obstacleBox.left ||
+                sobakaBox.left > obstacleBox.right ||
+                sobakaBox.bottom < obstacleBox.top ||
+                sobakaBox.top > obstacleBox.bottom);
+    }
+    
+    render() {
+        this.ctx.fillStyle = '#ebebeb';
+        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+        
+        this.ground.render();
+        
+        for (const obstacle of this.obstacles) {
+            obstacle.render();
+        }
+        
+        this.sobaka.render();
+        
+        // Draw score
+        this.ctx.fillStyle = '#535353';
+        this.ctx.font = `${20 * this.scale.y}px Arial`;
+        this.ctx.textAlign = 'right';
+        this.ctx.fillText(`HI ${this.highScore.toString().padStart(5, '0')}  ${this.score.toString().padStart(5, '0')}`, this.canvas.width - 30, 40);
+        
+        if (this.isIntro) {
+            this.renderIntro();
+        } else if (this.gameOver) {
+            this.renderGameOver();
+        }
+    }
+    
+    renderIntro() {
+        // Draw the original intro screen
+        const homeScreen = this.assets.sprites['home_screen.png'];
+        const logo = this.assets.sprites['logo2.png'];
+        
+        if (homeScreen && logo) {
+            // Draw home screen background
+            this.ctx.drawImage(homeScreen, 0, 0, this.canvas.width, this.canvas.height);
+            
+            // Draw logo at original position (40% from left, 25% from top)
+            const logoX = this.canvas.width * 0.4 - (logo.width * this.scale.x) / 2;
+            const logoY = this.canvas.height * 0.25 - (logo.height * this.scale.y) / 2;
+            
+            this.ctx.drawImage(logo, logoX, logoY, 
+                             logo.width * this.scale.x, 
+                             logo.height * this.scale.y);
+        }
+    }
+    
+    renderGameOver() {
+        // Draw game over screen using original assets
+        const gameOverImg = this.assets.sprites['game_over.png'];
+        const retryButtonImg = this.assets.sprites['replay_button.png'];
+        
+        if (gameOverImg && retryButtonImg) {
+            const gameOverX = (this.canvas.width - gameOverImg.width * this.scale.x) / 2;
+            const gameOverY = this.canvas.height * 0.35;
+            
+            const retryX = (this.canvas.width - retryButtonImg.width * this.scale.x) / 2;
+            const retryY = this.canvas.height * 0.52;
+            
+            this.ctx.drawImage(gameOverImg, gameOverX, gameOverY, 
+                             gameOverImg.width * this.scale.x, 
+                             gameOverImg.height * this.scale.y);
+            this.ctx.drawImage(retryButtonImg, retryX, retryY, 
+                             retryButtonImg.width * this.scale.x, 
+                             retryButtonImg.height * this.scale.y);
+        }
+        
+        // Allow restart after a short delay
+        if (!this.canRestart) {
+            setTimeout(() => { this.canRestart = true; }, 1000);
+        }
+    }
+}
+
+class Sobaka {
+    constructor(game) {
+        this.game = game;
+        this.width = 154 * game.scale.x;
+        this.height = 109 * game.scale.y;
+        this.x = game.canvas.width / 15;
+        this.y = game.canvas.height * 0.98 - this.height;
+        this.vy = 0;
+        
+        // Convert fixed jump forces to percentage of screen height
+        // Original values were -23.5 and -25.5, scale them relative to canvas height
+        this.normalJumpForce = -(this.game.canvas.height * 0.022); // About 2.2% of screen height
+        this.duckJumpForce = -(this.game.canvas.height * 0.028);   // About 2.8% of screen height
+        
+        this.isDucking = false;
+        this.frameX = 0;
+        this.frameTimer = 0;
+    }
+    
+    update() {
+        // Apply gravity relative to screen height
+        this.vy += this.game.gravity * (this.game.canvas.height * 0.0006); // 0.06% of screen height
+        this.y += this.vy;
+        
+        // Ground collision
+        if (this.y > this.game.canvas.height * 0.98 - this.height) {
+            this.y = this.game.canvas.height * 0.98 - this.height;
+            this.vy = 0;
+        }
+        
+        // Ceiling collision with bounce
+        if (this.y < this.game.canvas.height * 0.01) {
+            this.y = this.game.canvas.height * 0.01;
+            this.vy = -this.vy + (this.game.gravity * (this.game.canvas.height * 0.0006));
+            this.game.playSound('hit_hurt107.wav');
+        }
+        
+        // Animation
+        this.frameTimer++;
+        if (this.frameTimer >= 5) {
+            this.frameTimer = 0;
+            this.frameX = (this.frameX + 1) % (this.isDucking ? 2 : 4);
+        }
+    }
+    
+    jump() {
+        // Allow jumping while ducking regardless of ground contact (like in original)
+        if (this.isOnGround() || this.isDucking) {
+            // Use higher jump force when ducking
+            this.vy = this.isDucking ? this.duckJumpForce : this.normalJumpForce;
+        }
+    }
+    
+    isOnGround() {
+        return this.y >= this.game.canvas.height * 0.98 - this.height;
+    }
+    
+    getCollisionBox() {
+        return {
+            left: this.x + this.width * 0.2,
+            right: this.x + this.width * 0.8,
+            top: this.y + this.height * 0.2,
+            bottom: this.y + this.height * 0.8
+        };
+    }
+    
+    render() {
+        const sprite = this.isDucking ? 
+            this.game.assets.sprites['sobaka_ducking.png'] :
+            this.game.assets.sprites['sobaka.png'];
+            
+        if (sprite) {
+            const frameWidth = sprite.width / (this.isDucking ? 2 : 5);
+            const frameHeight = sprite.height;
+            
+            this.game.ctx.drawImage(
+                sprite,
+                this.frameX * frameWidth, 0,
+                frameWidth, frameHeight,
+                this.x, this.y,
+                this.width, this.height
+            );
+        }
+    }
+}
+
+class Ground {
+    constructor(game) {
+        this.game = game;
+        this.width = game.canvas.width;
+        this.height = 20 * game.scale.y;
+        this.x = 0;
+        this.speed = 4;
+        this.speedIncrementCounter = 0;
+        this.lastSpeedIncrement = 0;
+        this.sprite = game.assets.sprites['ground.png'];
+    }
+    
+    update() {
+        if (!this.game.gameOver) {
+            this.x -= this.speed * this.game.scale.x;
+            if (this.x <= -this.width) {
+                this.x = 0;
+            }
+
+            // Increment speed every 700 frames (like in original)
+            this.speedIncrementCounter++;
+            if (this.speedIncrementCounter % 700 === 699) {
+                this.speed += 1;
+                this.game.gameSpeed += 1;
+                // Only play sound if it's been at least 2 seconds since last increment
+                const currentTime = Date.now();
+                if (currentTime - this.lastSpeedIncrement > 2000) {
+                    this.game.playSound('checkPoint.wav');
+                    this.lastSpeedIncrement = currentTime;
+                }
+            }
+        }
+    }
+    
+    render() {
+        if (this.sprite) {
+            // Draw two copies of the ground for seamless scrolling
+            this.game.ctx.drawImage(this.sprite, this.x, this.game.canvas.height - this.height, this.width, this.height);
+            this.game.ctx.drawImage(this.sprite, this.x + this.width, this.game.canvas.height - this.height, this.width, this.height);
+        }
+    }
+}
+
+class Obstacle {
+    constructor(game) {
+        this.game = game;
+        this.width = 88 * game.scale.x;
+        this.height = 93 * game.scale.y;
+        this.x = game.canvas.width;
+        this.y = game.canvas.height * 0.98 - this.height;
+        this.speed = game.gameSpeed;
+    }
+    
+    update() {
+        if (!this.game.gameOver) {
+            this.x -= this.speed * this.game.scale.x;
+        }
+    }
+    
+    isVisible() {
+        return this.x + this.width > 0;
+    }
+    
+    getCollisionBox() {
+        return {
+            left: this.x + this.width * 0.1,
+            right: this.x + this.width * 0.9,
+            top: this.y + this.height * 0.1,
+            bottom: this.y + this.height * 0.9
+        };
+    }
+}
+
+class Cactus extends Obstacle {
+    constructor(game) {
+        super(game);
+        this.frameX = Math.floor(Math.random() * 2);
+        this.sprite = game.assets.sprites['cati-small.png'];
+    }
+    
+    render() {
+        if (this.sprite) {
+            const frameWidth = this.sprite.width / 2;
+            this.game.ctx.drawImage(
+                this.sprite,
+                this.frameX * frameWidth, 0,
+                frameWidth, this.sprite.height,
+                this.x, this.y,
+                this.width, this.height
+            );
+        }
+    }
+}
+
+class Parra extends Obstacle {
+    constructor(game) {
+        super(game);
+        this.width = 128 * game.scale.x;
+        this.height = 110 * game.scale.y;
+        this.y = game.canvas.height * (Math.random() < 0.5 ? 0.6 : 0.3);
+        this.frameX = 0;
+        this.frameTimer = 0;
+        this.sprite = game.assets.sprites['Parra.png'];
+        this.speed = game.gameSpeed * 1.5;
+    }
+    
+    update() {
+        super.update();
+        this.frameTimer++;
+        if (this.frameTimer >= 10) {
+            this.frameTimer = 0;
+            this.frameX = (this.frameX + 1) % 2;
+        }
+    }
+    
+    render() {
+        if (this.sprite) {
+            const frameWidth = this.sprite.width / 2;
+            this.game.ctx.drawImage(
+                this.sprite,
+                this.frameX * frameWidth, 0,
+                frameWidth, this.sprite.height,
+                this.x, this.y,
+                this.width, this.height
+            );
+        }
+    }
+}
+
+// Start the game when the page loads
+window.addEventListener('load', () => {
+    new Game();
+});
+</script>
+</body>
+</html>
